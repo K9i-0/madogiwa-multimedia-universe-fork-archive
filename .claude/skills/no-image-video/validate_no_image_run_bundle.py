@@ -14,9 +14,12 @@ Checks:
 - script.md references NO keyframes (chN_start.png / chN_end.png) and no paths outside the run
 - '## Character references', '## Scene ledger' and '## Camera plan' sections exist
 - every chapter is '- Mode: R2V' and has a '- Cast:' line
-- every <Picture N> is a character sheet (*_sheet.png) or height_lineup.png, exists as a
-  physical file, and belongs to a character listed in that chapter's Cast; every Cast member
-  has their sheet attached
+- every <Picture N> is a character sheet (*_sheet.png), height_lineup.png or a prop reference
+  (Prop_<slug>.png), exists as a physical file, and belongs to a character listed in that
+  chapter's Cast (or a prop listed in its '- Props:' line); every Cast member has their sheet
+  attached and every listed prop has its reference attached
+- every 'Prop_<slug>.png' referenced by script.md is marked APPROVED in chapter_plan.md and
+  described in a '## Prop references' section
 - R2V input limits: <=9 pictures, <=3 audio, <=12 files; every wav is 2.0-15.0 s
 - '- Duration:' declares 'Frames: N' on H3's 17k+5 grid (90..362)
 - the Motion prompt redeclares every attachment, and contains the mandatory phrases:
@@ -130,6 +133,21 @@ def main() -> None:
         if re.search(rf"^##.*\b{section}\b", text, re.MULTILINE | re.IGNORECASE) is None:
             errors.append(f"script.md lacks a '## {section}' section")
 
+    # every prop reference used anywhere in script.md must be user-approved in chapter_plan.md
+    # and described (PRESERVE / do NOT carry over) in '## Prop references'
+    prop_refs = sorted(set(re.findall(r"\bProp_[a-z0-9_]+\.png\b", text)))
+    if prop_refs and re.search(r"^##.*\bProp references\b", text, re.MULTILINE | re.IGNORECASE) is None:
+        errors.append("script.md attaches prop references but lacks a '## Prop references' section")
+    for prop_ref in prop_refs:
+        approved = any(
+            prop_ref in line and "APPROVED" in line for line in plan_text.splitlines()
+        )
+        if not approved:
+            errors.append(
+                f"{prop_ref} is not marked APPROVED in chapter_plan.md "
+                "(write '- Prop_<slug>.png — ... — Prop: APPROVED' after the user approved the prop reference)"
+            )
+
     # every mob sheet used anywhere in script.md must be user-approved in chapter_plan.md
     for mob_sheet in sorted(set(re.findall(r"\bMob_[a-z0-9_]+_sheet\.png\b", text))):
         approved = any(
@@ -171,6 +189,14 @@ def main() -> None:
                     errors.append(
                         f"Chapter {chapter}: Cast entry '{c}' is neither a canon name {CANON} nor 'Mob:<slug>'"
                     )
+
+        props_match = re.search(r"^- Props:\s*(.*)$", section, re.MULTILINE)
+        props: list[str] = []
+        if props_match is not None:
+            props = [f"Prop:{s.strip()}" for s in props_match.group(1).split(",") if s.strip() and s.strip().lower() != "none"]
+            for s in props:
+                if not re.fullmatch(r"Prop:[a-z0-9_]+", s):
+                    errors.append(f"Chapter {chapter}: Props entry '{s[5:]}' must be a lowercase slug (Prop_<slug>.png)")
 
         # The Motion prompt is exactly the one line extract_prompts.py feeds to H3 — not the rest
         # of the section. Reading to the end of the section would swallow the next chapter's prose
@@ -221,11 +247,22 @@ def main() -> None:
             check_bundled(run_dir, chapter, f"<Picture {slot}>", filename, errors)
             if filename == SCALE_REF:
                 continue
+            prop_m = re.fullmatch(r"Prop_([a-z0-9_]+)\.png", filename)
+            if prop_m is not None:
+                owner = f"Prop:{prop_m.group(1)}"
+                attached_sheets.add(owner)
+                if owner not in props:
+                    errors.append(
+                        f"Chapter {chapter}: <Picture {slot}> = {filename} is a prop reference not listed in this "
+                        f"chapter's '- Props:' line — only attach props that are on screen in this chapter"
+                    )
+                continue
             m = re.fullmatch(r"([A-Za-z]+)_sheet\.png", filename) or re.fullmatch(r"(Mob_[a-z0-9_]+)_sheet\.png", filename)
             if m is None:
                 errors.append(
                     f"Chapter {chapter}: <Picture {slot}> = {filename} is not a character sheet "
-                    "(*_sheet.png / Mob_<slug>_sheet.png) or height_lineup.png — no other images are attached in this skill"
+                    "(*_sheet.png / Mob_<slug>_sheet.png), a prop reference (Prop_<slug>.png) or height_lineup.png "
+                    "— no other images are attached in this skill"
                 )
                 continue
             name = m.group(1)
@@ -240,6 +277,9 @@ def main() -> None:
             if c not in attached_sheets:
                 expected = f"Mob_{c[4:]}_sheet.png" if c.startswith("Mob:") else f"{c}_sheet.png"
                 errors.append(f"Chapter {chapter}: Cast member '{c}' has no sheet attached (expected {expected})")
+        for s in props:
+            if s not in attached_sheets:
+                errors.append(f"Chapter {chapter}: listed prop '{s[5:]}' has no reference attached (expected Prop_{s[5:]}.png)")
 
         for slot, filename in audios:
             check_bundled(run_dir, chapter, f"<Audio {slot}>", filename, errors)
@@ -290,7 +330,7 @@ def main() -> None:
 
     if errors:
         fail(errors)
-    print(f"OK: no-image (MiniMax H3 R2V, sheets + audio only) bundle validated: {run_dir}")
+    print(f"OK: no-image (MiniMax H3 R2V, sheets + prop refs + audio only) bundle validated: {run_dir}")
 
 
 if __name__ == "__main__":
